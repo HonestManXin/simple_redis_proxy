@@ -3,6 +3,8 @@ import random
 import types
 import redis
 import zlib
+from threading import Thread, Event
+from Queue import Queue
 
 COUNT_KEY = "counter"
 
@@ -16,6 +18,43 @@ else
     return 0
 end
 """
+
+
+class _PipelineThread(Thread):
+    def __init__(self, task_queue):
+        super(_PipelineThread, self).__init__()
+        self.setDaemon(True)
+
+        self.task_queue = task_queue
+
+    def run(self):
+        while True:
+            pipeline, callback, event = self.task_queue.get()
+            callback(pipeline)
+            event.set()
+
+
+class _PipelineThreadPool(object):
+    def __init__(self, thread_num):
+        self.index = 0
+        self.thread_num = thread_num
+        self.queues = []
+        self.threads = []
+
+        self._init_threads()
+
+    def _init_threads(self):
+        for _ in xrange(self.thread_num):
+            queue = Queue()
+            t = _PipelineThread(queue)
+            self.queues.append(queue)
+            self.threads.append(t)
+            t.start()
+
+    def execute(self, data):
+        queue = self.queues[self.index]
+        queue.put(data)
+        self.index = (self.index + 1) % self.thread_num
 
 
 class KeyHashUtil(object):
@@ -44,12 +83,13 @@ class _MethodProxy(object):
 
 
 class _PipelineProxy(object):
-    def __init__(self, pipelines):
+    def __init__(self, pipelines, thread_pool):
         self.pipelines = pipelines
         self.num = len(pipelines)
         self._cmd_counter = 0
         self.pipeline_cmd_map = {}  # 用于记录每个pipeline在整个commands序列中的位置
         self._reset()
+        self.thread_pool = thread_pool
 
     def get_client(self, key):
         index = KeyHashUtil.get_index(key, self.num)
@@ -74,12 +114,24 @@ class _PipelineProxy(object):
         if self._cmd_counter == 0:
             return []
         result = [None] * self._cmd_counter
-        for pipeline in self.pipelines:
+
+        def _pipeline_callback(pipeline):
             cmd_squence = self.pipeline_cmd_map[pipeline]
             p_result = pipeline.execute()
             for i, value in enumerate(p_result):
                 index = cmd_squence[i]
                 result[index] = value
+
+        event_list = []
+        for pipe in self.pipelines:
+            _pipeline_callback(pipe)
+        #     event = Event()
+        #     event_list.append(event)
+        #     self.thread_pool.execute((pipe, _pipeline_callback, event))
+        #
+        # for event in event_list:
+        #     event.wait()
+
         self._reset()
         return result
 
@@ -120,9 +172,11 @@ class SimpleRedisProxy(object):
         """
         self.num = len(redis_hosts)
         self.clients = []
+        self.queue = Queue()
         for host, port in redis_hosts:
             client = redis.Redis(host, port)
             self.clients.append(client)
+        self.thread_pool = _PipelineThreadPool(4)
 
     def __getattr__(self, name):
         attr = getattr(self.clients[0], name)
@@ -150,7 +204,7 @@ class SimpleRedisProxy(object):
         for c in self.clients:
             p = c.pipeline()
             pipelines.append(p)
-        return _PipelineProxy(pipelines)
+        return _PipelineProxy(pipelines, self.thread_pool)
 
     def register_script(self, template):
         multplies = []
@@ -173,9 +227,10 @@ def test_normal_method(proxy, count):
 def test_pipeline_method(proxy, count):
     pipeline = proxy.pipeline()
     for i in xrange(count):
-        key = str(random.randint(0, count))
-        pipeline.exists(key)
-        pipeline.incr(COUNT_KEY)
+        key = str(i)
+        # key = str(random.randint(0, count))
+        # pipeline.exists(key)
+        # pipeline.incr(COUNT_KEY)
         pipeline.set(key, "1")
         if (i+1) % 5000 == 0:
             pipeline.execute()
@@ -183,7 +238,7 @@ def test_pipeline_method(proxy, count):
 
 
 def test(proxy):
-    count = 10000
+    count = 100000
     # proxy.flushall()
     import time
     start_time = time.time()
@@ -195,8 +250,8 @@ def test(proxy):
 
 
 def main():
-    # host = "10.16.66.97"
-    host = "10.211.55.15"
+    host = "10.16.66.97"
+    # host = "10.211.55.15"
     ports = [6379, 6380, 6381]
     addrs = []
     for port in ports:

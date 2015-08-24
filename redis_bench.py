@@ -14,6 +14,7 @@ else
 end
 """
 
+
 def test_single_command(count, client):
     for _ in xrange(count):
         key = str(random.randint(0, count))
@@ -26,11 +27,12 @@ def test_single_command(count, client):
 def test_pipeline(count, client):
     pipeline = client.pipeline()
     for i in xrange(1, count+1):
-        key = str(random.randint(0, count))
-        pipeline.exists(key)
-        pipeline.incr(COUNT_KEY)
+        key = str(i)
+        # key = random.randint(0, count)
+        # pipeline.exists(key)
+        # pipeline.incr(COUNT_KEY)
         pipeline.set(key, "1")
-        if i % 2000 == 0:
+        if i % 5000 == 0:
             pipeline.execute()
 
 
@@ -46,7 +48,7 @@ def test_lua_script(count, client):
 
 def test_start(func, client):
     client.flushall()
-    count = 10000
+    count = 100000
     start_time = time.time()
     func(count, client)
     end_time = time.time()
@@ -56,7 +58,8 @@ def test_start(func, client):
 
 
 def main():
-    client = redis.Redis('10.211.55.15')
+    # client = redis.Redis('10.211.55.15')
+    client = redis.Redis('10.16.66.97')
 
     # test_start(test_single_command, client)
     test_start(test_pipeline, client)

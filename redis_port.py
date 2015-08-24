@@ -84,6 +84,8 @@ class RedisPort(object):
 
 
 def main():
+    # redis_port = RedisPort()
+    # redis_port.add_instances()
     pass
 
 
